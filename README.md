@@ -76,6 +76,12 @@ the plugin's whole purpose; everything it grants is listed above.
 - The sudoers rule grants exactly one command shape:
   `/usr/local/bin/battery-charge-limit set *`. The helper validates both
   integers and rejects start ≥ end before touching sysfs.
+- When running as root the helper ignores all environment overrides: it always
+  writes to `/sys/class/power_supply` and never dry-runs. The test-only sysfs
+  redirect works solely for unprivileged callers against a user-owned tree.
+- Multi-battery updates are transactional: if any battery rejects a value,
+  every battery already changed is restored to its previous state before the
+  error is reported.
 - The helper refuses to write user state when invoked as root, and its
   version is checked against the plugin on every poll so stale deployments
   surface immediately instead of failing silently.

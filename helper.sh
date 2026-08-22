@@ -1,10 +1,17 @@
 #!/bin/bash
 set -u
 
-SYSFS="${BATTERY_SYSFS:-/sys/class/power_supply}"
+SYSFS="/sys/class/power_supply"
 HELPER_BIN="/usr/local/bin/battery-charge-limit"
 DRY_RUN="${CHARGE_LIMIT_DRY_RUN:-}"
-VERSION="3"
+VERSION="4"
+
+if [ "$(id -u)" -eq 0 ]; then
+  SYSFS="/sys/class/power_supply"
+  DRY_RUN=""
+elif [ -n "${BATTERY_SYSFS:-}" ]; then
+  SYSFS="$BATTERY_SYSFS"
+fi
 
 cmd_version() {
   printf '{"ok":true,"version":"%s"}\n' "$VERSION"
@@ -125,34 +132,51 @@ write_attr() {
 
 APPLIED_START=""
 
+restore_attr() {
+  local file=$1 value=$2
+  [ -n "$value" ] || return 0
+  echo "$value" > "$file" 2>/dev/null
+}
+
 write_pair() {
   local dir=$1 new_end=$2 new_start=$3
   local start_file="$dir/charge_control_start_threshold"
   local end_file="$dir/charge_control_end_threshold"
-  local cur_end cur_start
+  local old_start="" old_end=""
+  old_end=$(read_int "$end_file")
+  [ -e "$start_file" ] && old_start=$(read_int "$start_file")
 
   if [ -n "$new_start" ]; then
-    cur_end=$(read_int "$end_file")
-    if [ -n "$cur_end" ] && [ "$new_start" -gt "$cur_end" ]; then
+    if [ -n "$old_end" ] && [ "$new_start" -gt "$old_end" ]; then
       write_attr "$end_file" "$new_end" || return 1
-      write_attr "$start_file" "$new_start" || return 1
+      if ! write_attr "$start_file" "$new_start"; then
+        restore_attr "$end_file" "$old_end"
+        return 1
+      fi
     else
       write_attr "$start_file" "$new_start" || return 1
-      write_attr "$end_file" "$new_end" || return 1
+      if ! write_attr "$end_file" "$new_end"; then
+        restore_attr "$start_file" "$old_start"
+        return 1
+      fi
     fi
     APPLIED_START=$new_start
     return 0
   fi
 
-  if [ -e "$start_file" ]; then
-    cur_start=$(read_int "$start_file")
-    if [ -n "$cur_start" ] && [ "$cur_start" -gt 0 ] && [ "$cur_start" -ge "$new_end" ]; then
-      local auto_start=$((new_end - 5))
-      [ "$auto_start" -lt 0 ] && auto_start=0
-      write_attr "$start_file" "$auto_start" || return 1
-      APPLIED_START=$auto_start
+  if [ -e "$start_file" ] && [ -n "$old_start" ] && [ "$old_start" -gt 0 ] && [ "$old_start" -ge "$new_end" ]; then
+    local auto_start=$((new_end - 5))
+    [ "$auto_start" -lt 0 ] && auto_start=0
+    write_attr "$start_file" "$auto_start" || return 1
+    APPLIED_START=$auto_start
+    if ! write_attr "$end_file" "$new_end"; then
+      restore_attr "$start_file" "$old_start"
+      APPLIED_START=""
+      return 1
     fi
+    return 0
   fi
+
   write_attr "$end_file" "$new_end" || return 1
 }
 
@@ -181,38 +205,57 @@ cmd_set() {
     fi
   fi
 
-  if [ -z "$DRY_RUN" ] && [ "$(id -u)" -ne 0 ]; then
+  if [ "$SYSFS" = "/sys/class/power_supply" ] && [ "$(id -u)" -ne 0 ]; then
     printf '{"ok":false,"error":"not running as root"}\n'
     exit 1
   fi
 
-  local errors=0 details=""
-  local count=0
-
+  local dirs=()
+  local dir
   while IFS= read -r dir; do
-    [ -n "$dir" ] || continue
-    count=$((count + 1))
-    local name=${dir##*/}
-
-    APPLIED_START=""
-    if write_pair "$dir" "$end" "$start"; then
-      details="$details{\"name\":$(json_escape "$name"),\"end\":$end,\"start\":$( [ -n "$APPLIED_START" ] && printf '%s' "$APPLIED_START" || printf 'null' )},"
-    else
-      errors=$((errors + 1))
-      details="$details{\"name\":$(json_escape "$name"),\"error\":\"kernel rejected the value\"},"
-    fi
+    [ -n "$dir" ] && dirs+=("$dir")
   done < <(batteries_with_end_threshold)
 
-  if [ "$count" -eq 0 ]; then
+  if [ "${#dirs[@]}" -eq 0 ]; then
     printf '{"ok":false,"error":"no battery with a charge limit is present"}\n'
     exit 1
   fi
 
-  details=${details%,}
+  local errors=0 details=""
+  local undo_dirs=()
+  local undo_old_starts=()
+  local undo_old_ends=()
+  local i name old_start old_end
+
+  for dir in "${dirs[@]}"; do
+    name=${dir##*/}
+    old_end=$(read_int "$dir/charge_control_end_threshold")
+    old_start=""
+    [ -e "$dir/charge_control_start_threshold" ] && old_start=$(read_int "$dir/charge_control_start_threshold")
+
+    APPLIED_START=""
+    if write_pair "$dir" "$end" "$start"; then
+      details="$details{\"name\":$(json_escape "$name"),\"end\":$end,\"start\":$( [ -n "$APPLIED_START" ] && printf '%s' "$APPLIED_START" || printf 'null' )},"
+      undo_dirs+=("$dir")
+      undo_old_starts+=("$old_start")
+      undo_old_ends+=("$old_end")
+    else
+      errors=$((errors + 1))
+      details="$details{\"name\":$(json_escape "$name"),\"error\":\"kernel rejected the value\"},"
+    fi
+  done
+
   if [ "$errors" -gt 0 ]; then
-    printf '{"ok":false,"error":"one or more batteries rejected the value","batteries":[%s]}\n' "$details"
+    for i in "${!undo_dirs[@]}"; do
+      restore_attr "${undo_dirs[$i]}/charge_control_end_threshold" "${undo_old_ends[$i]}"
+      restore_attr "${undo_dirs[$i]}/charge_control_start_threshold" "${undo_old_starts[$i]}"
+    done
+    details=${details%,}
+    printf '{"ok":false,"error":"one or more batteries rejected the value; applied changes were rolled back","batteries":[%s]}\n' "$details"
     exit 3
   fi
+
+  details=${details%,}
   printf '{"ok":true,"batteries":[%s]}\n' "$details"
 }
 
@@ -232,8 +275,16 @@ cmd_save_state() {
     exit 2
   fi
   case $start in
-    ''|*[!0-9]*) start=0 ;;
+    '') start=0 ;;
+    *[!0-9]*)
+      printf '{"ok":false,"error":"lower limit must be an integer"}\n'
+      exit 2
+      ;;
   esac
+  if [ "$start" -gt 100 ] || [ "$start" -ge "$end" ]; then
+    printf '{"ok":false,"error":"lower limit must be below the upper limit"}\n'
+    exit 2
+  fi
   mkdir -p "$(state_dir)"
   printf '%s %s\n' "$end" "$start" > "$(state_dir)/limit"
   printf '{"ok":true}\n'

@@ -27,8 +27,7 @@ BarWidget {
   property bool supported: false
   property bool granted: false
   property bool helperOutdated: false
-  property int limit: -1
-  property int startThreshold: -1
+  property var batteries: []
   property int batteryPct: -1
   property bool charging: false
   property bool applying: false
@@ -36,8 +35,25 @@ BarWidget {
   property int pendingEnd: -1
   property int pendingStart: -1
   property bool granting: false
+  property bool stateDirty: false
+  property bool bootPrefDirty: false
+  property int requestedEnd: -1
+  property int requestedStart: -1
 
-  readonly property bool limitActive: root.limit > 0 && root.limit < 100
+  function activeBatteryCount(list) {
+    var n = 0
+    for (var i = 0; i < list.length; i++) {
+      var e = root.num(list[i] && list[i].end, -1)
+      if (e > 0 && e < 100) n++
+    }
+    return n
+  }
+
+  readonly property int activeBatteries: root.activeBatteryCount(root.batteries)
+  readonly property bool limitActive: root.activeBatteries > 0
+  readonly property bool mixedLimits: root.batteries.length > 1
+    && root.activeBatteries > 0
+    && root.activeBatteries < root.batteries.length
 
   function num(value, fallback) {
     var n = Number(value)
@@ -51,9 +67,21 @@ BarWidget {
     if (!root.probed) return "Battery charge limit…"
     if (!root.supported) return "Battery charge limit not supported on this hardware"
     var bat = root.batteryPct >= 0 ? " • Battery " + root.batteryPct + "%" + (root.charging ? " ⚡" : "") : ""
-    var state = root.limitActive
-      ? "Charge limit on (" + root.limit + "/" + Math.max(0, root.startThreshold) + ")"
-      : "Charge limit off"
+    var state
+    if (root.mixedLimits) {
+      var parts = []
+      for (var i = 0; i < root.batteries.length; i++) {
+        var b = root.batteries[i]
+        var e = root.num(b.end, -1)
+        parts.push((b.name || ("BAT" + i)) + " " + ((e > 0 && e < 100) ? e + "/" + Math.max(0, root.num(b.start, 0)) : "off"))
+      }
+      state = "Charge limit mixed: " + parts.join(", ")
+    } else {
+      var first = root.batteries.length > 0 ? root.batteries[0] : null
+      state = root.limitActive
+        ? "Charge limit on (" + root.num(first && first.end, root.limitEnd) + "/" + Math.max(0, root.num(first && first.start, 0)) + ")"
+        : "Charge limit off"
+    }
     var err = root.lastError !== "" ? " • " + root.lastError : ""
     return state + bat + err + " • Click to toggle"
   }
@@ -101,13 +129,22 @@ BarWidget {
     root.granted = nowGranted
     root.lastError = ""
     if (Array.isArray(data.batteries) && data.batteries.length > 0) {
-      root.limit = root.num(data.batteries[0].end, -1)
-      root.startThreshold = root.num(data.batteries[0].start, -1)
-      root.batteryPct = root.num(data.batteries[0].capacity, -1)
-      root.charging = data.batteries[0].charging === true
+      root.batteries = data.batteries
+      var pctSum = 0
+      var pctCount = 0
+      var anyCharging = false
+      for (var i = 0; i < data.batteries.length; i++) {
+        var b = data.batteries[i]
+        if (root.num(b.capacity, -1) >= 0) {
+          pctSum += root.num(b.capacity, 0)
+          pctCount++
+        }
+        if (b.charging === true) anyCharging = true
+      }
+      root.batteryPct = pctCount > 0 ? Math.round(pctSum / pctCount) : -1
+      root.charging = anyCharging
     } else {
-      root.limit = -1
-      root.startThreshold = -1
+      root.batteries = []
       root.batteryPct = -1
       root.charging = false
     }
@@ -157,6 +194,8 @@ BarWidget {
     }
     root.applying = true
     root.lastError = ""
+    root.requestedEnd = end
+    root.requestedStart = start
     setStatus.command = ["sudo", "-n", root.helperBin, "set", String(end), String(start)]
     setStatus.running = true
   }
@@ -185,34 +224,40 @@ BarWidget {
       root.lastError = String(data.error || "set failed")
       return
     }
-    if (Array.isArray(data.batteries) && data.batteries.length > 0) {
-      root.limit = root.num(data.batteries[0].end, root.limit)
-      root.startThreshold = root.num(data.batteries[0].start, root.startThreshold)
-    }
     root.lastError = ""
-    root.persistState()
+    root.persistState(root.requestedEnd, root.requestedStart)
     root.refresh()
   }
 
   // ---- Persistence (state file + boot hook) ----
-  function persistState() {
-    if (!root.supported || root.limit < 0) return
-    var start = root.startThreshold >= 0 ? root.startThreshold : 0
-    if (start >= root.limit) start = Math.max(0, root.limit - 5)
-    stateProc.command = ["bash", root.scriptPath(), "save-state", String(root.limit), String(start)]
-    if (!stateProc.running) stateProc.running = true
-    syncBootPref()
+  function persistState(endValue, startValue) {
+    if (!root.supported) return
+    if (stateProc.running) {
+      root.stateDirty = true
+      return
+    }
+    stateProc.command = ["bash", root.scriptPath(), "save-state", String(clampLimit(endValue)), String(Math.max(0, Math.round(Number(startValue) || 0)))]
+    stateProc.running = true
   }
 
   function syncBootPref() {
     if (!root.granted) return
+    if (bootPrefProc.running) {
+      root.bootPrefDirty = true
+      return
+    }
     bootPrefProc.command = ["bash", root.scriptPath(), "boot-pref", root.applyAtBootPref ? "on" : "off"]
-    if (!bootPrefProc.running) bootPrefProc.running = true
+    bootPrefProc.running = true
   }
 
   function installHook() {
     hookProc.command = ["omarchy", "hook", "install", "post-boot", root.pluginDir + "/" + root.hookName]
     if (!hookProc.running) hookProc.running = true
+  }
+
+  function removeHook() {
+    removeHookProc.command = ["rm", "-f", Quickshell.env("HOME") + "/.config/omarchy/hooks/post-boot.d/" + root.hookName]
+    if (!removeHookProc.running) removeHookProc.running = true
   }
 
   // ---- Grant / redeploy flow (one-time pkexec setup) ----
@@ -271,7 +316,12 @@ BarWidget {
     id: stateProc
     stdout: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode === 0 && root.applyAtBootPref) root.installHook()
+      if (root.stateDirty) {
+        root.stateDirty = false
+        Qt.callLater(function() { root.persistState(root.requestedEnd, root.requestedStart) })
+      } else if (exitCode === 0 && root.applyAtBootPref) {
+        root.installHook()
+      }
     }
   }
 
@@ -279,12 +329,23 @@ BarWidget {
     id: bootPrefProc
     stdout: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode === 0 && root.applyAtBootPref) root.installHook()
+      if (root.bootPrefDirty) {
+        root.bootPrefDirty = false
+        Qt.callLater(root.syncBootPref)
+      } else if (exitCode === 0) {
+        if (root.applyAtBootPref) root.installHook()
+        else root.removeHook()
+      }
     }
   }
 
   Process {
     id: hookProc
+    stdout: StdioCollector { waitForEnd: true }
+  }
+
+  Process {
+    id: removeHookProc
     stdout: StdioCollector { waitForEnd: true }
   }
 

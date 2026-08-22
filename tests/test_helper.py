@@ -113,9 +113,40 @@ def main():
         data = json.loads(r.stdout)
         check("set disable pair ok", data["ok"] is True, r.stdout)
 
+        rollback_tree = os.path.join(tmp, "rollback")
+        for name in ("BAT0", "BAT1"):
+            d = os.path.join(rollback_tree, name)
+            os.makedirs(d)
+            with open(os.path.join(d, "charge_control_end_threshold"), "w") as fh:
+                fh.write("80\n")
+            with open(os.path.join(d, "charge_control_start_threshold"), "w") as fh:
+                fh.write("75\n")
+        os.chmod(os.path.join(rollback_tree, "BAT1", "charge_control_end_threshold"), 0o444)
+        renv_nb = {"BATTERY_SYSFS": rollback_tree}
+        r = subprocess.run(
+            ["bash", HELPER, "set", "70", "60"],
+            capture_output=True, text=True,
+            env={**os.environ, **renv_nb},
+        )
+        data = json.loads(r.stdout)
+        check("partial failure reported", r.returncode == 3 and data["ok"] is False, r.stdout)
+        check("failure mentions rollback", "rolled back" in data.get("error", ""), r.stdout)
+        bat0_end_after = open(os.path.join(rollback_tree, "BAT0", "charge_control_end_threshold")).read().strip()
+        bat0_start_after = open(os.path.join(rollback_tree, "BAT0", "charge_control_start_threshold")).read().strip()
+        check("BAT0 end rolled back", bat0_end_after == "80", f"end={bat0_end_after}")
+        check("BAT0 start rolled back", bat0_start_after == "75", f"start={bat0_start_after}")
+        os.chmod(os.path.join(rollback_tree, "BAT1", "charge_control_end_threshold"), 0o644)
+
+        root_env_test = subprocess.run(
+            ["bash", HELPER, "get"],
+            capture_output=True, text=True,
+            env={**os.environ, "BATTERY_SYSFS": fake_sys},
+        )
+        check("unprivileged get works", root_env_test.returncode == 0)
+
         r = run("version", dry=False)
         vdata = json.loads(r.stdout)
-        check("version ok", vdata["ok"] is True and vdata["version"] == "3", r.stdout)
+        check("version ok", vdata["ok"] is True and vdata["version"] == "4", r.stdout)
 
         state = os.path.join(tmp, "state")
         senv = {"BATTERY_SYSFS": fake_sys, "XDG_STATE_HOME": state}
@@ -129,6 +160,12 @@ def main():
 
         r = run("save-state", "999", extra_env=senv)
         check("save-state rejects bad value", r.returncode == 2)
+
+        r = run("save-state", "75", "999", extra_env=senv)
+        check("save-state rejects out-of-range lower", r.returncode == 2, r.stdout)
+
+        r = run("save-state", "70", "80", extra_env=senv)
+        check("save-state rejects lower above upper", r.returncode == 2, r.stdout)
 
         marker = os.path.join(state, "battery-charge-limit", "apply-at-boot")
         r = run("boot-pref", "on", extra_env=senv)
