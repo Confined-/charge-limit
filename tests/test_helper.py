@@ -174,6 +174,78 @@ def main():
         check("60/70 start restored across raising transition", bat0_start_after == "60", f"start={bat0_start_after}")
         os.chmod(os.path.join(order_tree, "BAT1", "charge_control_end_threshold"), 0o644)
 
+    def parse_write_events(stderr):
+        events = []
+        import re
+        for line in stderr.splitlines():
+            m = re.match(r"dry-run: echo (\d+) > .*(charge_control_(start|end)_threshold)", line)
+            if m:
+                events.append((m.group(3), int(m.group(1))))
+        return events
+
+    def assert_invariant_walk(events, start0, end0, label):
+        s, e = start0, end0
+        for target, val in events:
+            if target == "start":
+                s = val
+            else:
+                e = val
+            check(
+                f"{label}: intermediate start<end after {target}={val}",
+                s < e,
+                f"state start={s} end={e}",
+            )
+
+    with tempfile.TemporaryDirectory() as trace_tmp:
+        d = os.path.join(trace_tmp, "BAT0")
+        os.makedirs(d)
+        with open(os.path.join(d, "charge_control_end_threshold"), "w") as fh:
+            fh.write("70\n")
+        with open(os.path.join(d, "charge_control_start_threshold"), "w") as fh:
+            fh.write("60\n")
+        tenv = {"BATTERY_SYSFS": trace_tmp}
+
+        r = run("set", "80", "75", extra_env=tenv)
+        check("equality-boundary transition ok", json.loads(r.stdout)["ok"] is True, r.stdout + r.stderr)
+        assert_invariant_walk(parse_write_events(r.stderr), 60, 70, "60/70 -> 75/80")
+
+        r = run("set", "45", "40", extra_env=tenv)
+        check("descending transition ok", json.loads(r.stdout)["ok"] is True, r.stdout + r.stderr)
+        assert_invariant_walk(parse_write_events(r.stderr), 60, 70, "60/70 -> 40/45")
+
+        r = run("set", "100", "0", extra_env=tenv)
+        check("disable transition ok", json.loads(r.stdout)["ok"] is True, r.stdout + r.stderr)
+        assert_invariant_walk(parse_write_events(r.stderr), 60, 70, "60/70 -> off")
+
+        with open(os.path.join(d, "charge_control_end_threshold"), "w") as fh:
+            fh.write("80\n")
+        with open(os.path.join(d, "charge_control_start_threshold"), "w") as fh:
+            fh.write("75\n")
+        src = subprocess.run(
+            [
+                "bash", "-c",
+                f'export BATTERY_SYSFS={trace_tmp} CHARGE_LIMIT_DRY_RUN=1; '
+                f'set -- __lib__; source {HELPER}; '
+                'restore_pair "$BATTERY_SYSFS/BAT0" 60 70',
+            ],
+            capture_output=True, text=True,
+        )
+        assert_invariant_walk(parse_write_events(src.stderr), 75, 80, "restore (75,80) -> (60,70)")
+
+        r = run("version", dry=False)
+        vdata = json.loads(r.stdout)
+        check("version ok", vdata["ok"] is True and vdata["version"] == "6", r.stdout)
+        src2 = subprocess.run(
+            [
+                "bash", "-c",
+                f'export BATTERY_SYSFS={trace_tmp} CHARGE_LIMIT_DRY_RUN=1; '
+                f'set -- __lib__; source {HELPER}; '
+                'APPLIED_START=""; write_pair "$BATTERY_SYSFS/BAT0" 70 60 && restore_pair "$BATTERY_SYSFS/BAT0" 75 80',
+            ],
+            capture_output=True, text=True,
+        )
+        assert_invariant_walk(parse_write_events(src2.stderr), 60, 70, "write_pair+restore_pair round trip")
+
         root_env_test = subprocess.run(
             ["bash", HELPER, "get"],
             capture_output=True, text=True,
@@ -183,7 +255,7 @@ def main():
 
         r = run("version", dry=False)
         vdata = json.loads(r.stdout)
-        check("version ok", vdata["ok"] is True and vdata["version"] == "5", r.stdout)
+        check("version ok", vdata["ok"] is True and vdata["version"] == "6", r.stdout)
 
         state = os.path.join(tmp, "state")
         senv = {"BATTERY_SYSFS": fake_sys, "XDG_STATE_HOME": state}

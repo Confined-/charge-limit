@@ -4,7 +4,7 @@ set -u
 SYSFS="/sys/class/power_supply"
 HELPER_BIN="/usr/local/bin/battery-charge-limit"
 DRY_RUN="${CHARGE_LIMIT_DRY_RUN:-}"
-VERSION="5"
+VERSION="6"
 
 if [ "$(id -u)" -eq 0 ]; then
   SYSFS="/sys/class/power_supply"
@@ -148,29 +148,22 @@ restore_pair() {
   cur_end=$(read_int "$end_file")
   [ -e "$start_file" ] && cur_start=$(read_int "$start_file")
 
-  if [ -z "$cur_start" ] || [ "$old_end" -ge "$cur_start" ]; then
-    write_attr "$end_file" "$old_end" || return 1
-    if [ -n "$old_start" ] && ! write_attr "$start_file" "$old_start"; then
-      return 1
-    fi
-    return 0
-  fi
-
-  if [ -n "$old_start" ] && [ "$old_start" -le "$cur_end" ]; then
+  if [ -n "$cur_start" ] && [ "$old_end" -le "$cur_start" ]; then
     write_attr "$start_file" "$old_start" || return 1
-    if write_attr "$end_file" "$old_end"; then
-      return 0
-    fi
-    return 1
+    write_attr "$end_file" "$old_end" || return 1
+  else
+    write_attr "$end_file" "$old_end" || return 1
+    write_attr "$start_file" "$old_start" || return 1
   fi
 
-  restore_attr "$end_file" "$old_end"
-  restore_attr "$start_file" "$old_start"
-  local now_end now_start
+  local now_end now_start=""
   now_end=$(read_int "$end_file")
   [ -e "$start_file" ] && now_start=$(read_int "$start_file")
   [ "$now_end" = "$old_end" ] || return 1
-  [ -z "$old_start" ] || [ "$now_start" = "$old_start" ] || return 1
+  if [ -n "$old_start" ]; then
+    [ "$now_start" = "$old_start" ] || return 1
+  fi
+  return 0
 }
 
 write_pair() {
@@ -182,7 +175,7 @@ write_pair() {
   [ -e "$start_file" ] && old_start=$(read_int "$start_file")
 
   if [ -n "$new_start" ]; then
-    if [ -n "$old_end" ] && [ "$new_start" -gt "$old_end" ]; then
+    if [ -n "$old_end" ] && [ "$new_start" -ge "$old_end" ]; then
       write_attr "$end_file" "$new_end" || return 1
       if ! write_attr "$start_file" "$new_start"; then
         restore_attr "$end_file" "$old_end"
@@ -345,6 +338,10 @@ cmd_boot_pref() {
   esac
   printf '{"ok":true}\n'
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 [ $# -ge 1 ] || usage
 

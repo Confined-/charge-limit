@@ -12,7 +12,7 @@ BarWidget {
   readonly property bool applyAtBootPref: setting("applyAtBoot", true) === true
 
   readonly property string helperBin: "/usr/local/bin/battery-charge-limit"
-  readonly property string helperVersion: "5"
+  readonly property string helperVersion: "6"
   readonly property string hookName: "confined.charge-limit.sh"
   readonly property string pluginDir: {
     var p = root.scriptPath()
