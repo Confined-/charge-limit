@@ -1,11 +1,11 @@
 # Charge Limit
 
-Cap where your laptop starts and stops charging, straight from the Omarchy
-tray. Keeping a battery around 60–80% dramatically slows its aging when the
-machine is mostly plugged in.
+One-click **80/70% battery charge limit** toggle for Omarchy. Keeping a lithium
+battery between 70–80% dramatically slows its aging when the machine spends
+most of its time plugged in.
 
-Works on any laptop whose battery exposes the standard kernel interface
-(`charge_control_end_threshold`) — ThinkPads, ASUS, Framework, many others.
+Click the lightning bolt in the bar: charging stops at **80%** and resumes
+below **70%**. Click again to remove the limit entirely (100/0).
 
 ## Install
 
@@ -13,68 +13,72 @@ Works on any laptop whose battery exposes the standard kernel interface
 omarchy plugin add https://github.com/Confined-/charge-limit.git --enable
 ```
 
-Then add **Charge Limit** to your bar (Command center → Bar → widgets), or:
-
-```sh
-omarchy plugin enable confined.charge-limit right
-```
-
-## First use
-
-Open the panel from the tray icon and tap **Grant access**. One polkit prompt
-installs two root-owned pieces:
-
-- `/usr/local/bin/battery-charge-limit` — a tiny helper that validates values
-  (integers 20–100) and writes them to every battery exposing
-  `charge_control_end_threshold`
-- `/etc/sudoers.d/battery-charge-limit` — a sudoers drop-in allowing your user
-  passwordless execution of *that helper only* (validated with `visudo -c`
-  before activation)
-
-After that, all changes are instant and passwordless.
+Requires a battery exposing the kernel interface
+`/sys/class/power_supply/BAT*/charge_control_end_threshold`
+(ThinkPads, ASUS, Framework, and many others). Multiple batteries are supported.
+On unsupported hardware the bolt stays dimmed and the tooltip says so.
 
 ## Use
 
-**Click the bar item. That's it.**
+- **Left/right-click the bar item** to toggle the limit on or off.
+- Icon is a lightning bolt in your theme's accent color while active, muted
+  gray when off or unsupported.
+- Hover the icon for status: limit state, battery percentage, charging.
+- The first click asks once via polkit (fingerprint/password) to install two
+  root-owned pieces:
+  - `/usr/local/bin/battery-charge-limit` — a helper that validates values
+    (integers, start < end) and writes them to every qualifying battery;
+    it can only set these two sysfs files
+  - `/etc/sudoers.d/battery-charge-limit` — a sudoers drop-in allowing your
+    user passwordless execution of exactly `that helper set …` (validated with
+    `visudo -c` before activation)
 
-- ON — charging stops at **80%** and resumes below **70%**
-  (`charge_control_end_threshold=80`, `charge_control_start_threshold=70`).
-- OFF — both reset to the kernel default (100/0).
+Every later toggle is instant and passwordless. Your hardware keeps whatever
+limit was last applied even if you uninstall the plugin.
 
-The icon shows `󰁼 80%` while active and a plain battery glyph when off; hover
-for battery status. The first click prompts once via polkit to install the
-helper + sudoers rule; every later toggle is instant and passwordless.
+### Re-apply after reboot
 
-If **Apply after reboot** is on (default, see Configure), an
-`omarchy post-boot.d` hook re-applies your last state at login.
+With the default `applyAtBoot: true`, each successful toggle saves its state
+and installs an `omarchy post-boot.d` hook (`confined.charge-limit.sh`) that
+re-applies the saved values at desktop start. Set `applyAtBoot` to `false` to
+disable this; the hook then removes itself on the next toggle.
 
 ## Configure
 
 Entry settings in `~/.config/omarchy/shell.json` (`bar.layout.*` →
 `confined.charge-limit`):
 
-| Key              | Type    | Default | Description                          |
-|------------------|---------|---------|--------------------------------------|
-| `pollIntervalSec`| integer | 30      | How often the tray state refreshes   |
-| `applyAtBoot`    | boolean | true    | Re-apply the limit after reboot      |
+| Key               | Type    | Default | Description                        |
+|-------------------|---------|---------|------------------------------------|
+| `pollIntervalSec` | integer | 30      | How often the bar state refreshes  |
+| `applyAtBoot`     | boolean | true    | Save state + install the boot hook |
+
+The limits themselves are fixed at 80/70 in v1 by design.
 
 ## Uninstall
 
 ```sh
 omarchy plugin remove confined.charge-limit
+rm -f ~/.config/omarchy/hooks/post-boot.d/confined.charge-limit.sh
+rm -rf ~/.local/state/battery-charge-limit
 sudo rm -f /usr/local/bin/battery-charge-limit /etc/sudoers.d/battery-charge-limit
-rm -rf ~/.local/state/battery-charge-limit ~/.config/omarchy/hooks/post-boot.d/post-boot.sh
 ```
 
-Removing the plugin does not change your hardware's current limit.
+`omarchy plugin remove` alone deletes only the plugin folder — run the three
+extra lines to fully remove the boot hook, saved state, root helper, and
+passwordless sudoers rule. The last line needs sudo because that privilege is
+the plugin's whole purpose; everything it grants is listed above.
 
-## Requirements
+## Security notes
 
-- Omarchy 4 (Quattro) shell
-- A battery exposing `/sys/class/power_supply/BAT*/charge_control_end_threshold`
-- `polkit`/`pkexec` (preinstalled on Omarchy)
-
-Multiple batteries are supported — the limit is applied to all of them.
+- No plugin code runs at install time; privileged setup happens only when you
+  click and approve the polkit prompt.
+- The sudoers rule grants exactly one command shape:
+  `/usr/local/bin/battery-charge-limit set *`. The helper validates both
+  integers and rejects start ≥ end before touching sysfs.
+- The helper refuses to write user state when invoked as root, and its
+  version is checked against the plugin on every poll so stale deployments
+  surface immediately instead of failing silently.
 
 ## License
 

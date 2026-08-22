@@ -10,6 +10,9 @@ fail() {
 [ $# -eq 1 ] || fail "usage: setup-root.sh <username>" 2
 
 TARGET_USER=$1
+if ! [[ $TARGET_USER =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+  fail "invalid username: $TARGET_USER" 2
+fi
 id -u "$TARGET_USER" >/dev/null 2>&1 || fail "no such user: $TARGET_USER" 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)" || fail "cannot resolve script directory"
@@ -23,8 +26,8 @@ install -o root -g root -m 0755 "$SRC_HELPER" "$DEST_HELPER" || fail "failed to 
 
 TMP_SUDOERS="$(mktemp)" || fail "mktemp failed" 1
 printf '# Installed by the confined.charge-limit Omarchy plugin\n' > "$TMP_SUDOERS"
-printf '# Grants passwordless access to the battery charge limit helper only.\n' >> "$TMP_SUDOERS"
-printf '%s ALL=(root) NOPASSWD: %s\n' "$TARGET_USER" "$DEST_HELPER" >> "$TMP_SUDOERS" || fail "failed to write temp sudoers" 1
+printf '# Grants passwordless access to the charge-limit helper "set" command only.\n' >> "$TMP_SUDOERS"
+printf '%s ALL=(root) NOPASSWD: %s set *\n' "$TARGET_USER" "$DEST_HELPER" >> "$TMP_SUDOERS" || fail "failed to write temp sudoers" 1
 chown root:root "$TMP_SUDOERS" || fail "chown failed" 1
 chmod 0440 "$TMP_SUDOERS" || fail "chmod failed" 1
 

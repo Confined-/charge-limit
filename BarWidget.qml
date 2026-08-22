@@ -12,6 +12,8 @@ BarWidget {
   readonly property bool applyAtBootPref: setting("applyAtBoot", true) === true
 
   readonly property string helperBin: "/usr/local/bin/battery-charge-limit"
+  readonly property string helperVersion: "3"
+  readonly property string hookName: "confined.charge-limit.sh"
   readonly property string pluginDir: {
     var p = root.scriptPath()
     return p.substring(0, p.lastIndexOf("/"))
@@ -43,10 +45,7 @@ BarWidget {
   }
 
   // ---- Bar presentation ----
-  readonly property string barText: {
-    if (!root.probed || !root.supported) return ""
-    return "\uF0E7"
-  }
+  readonly property string barText: "\uF0E7"
 
   readonly property string barTooltip: {
     if (!root.probed) return "Battery charge limit…"
@@ -98,7 +97,7 @@ BarWidget {
     root.probed = true
     root.supported = data.supported === true
     var nowGranted = data.installed === true
-    root.helperOutdated = nowGranted && String(data.version || "") !== "2"
+    root.helperOutdated = nowGranted && String(data.version || "") !== root.helperVersion
     root.granted = nowGranted
     root.lastError = ""
     if (Array.isArray(data.batteries) && data.batteries.length > 0) {
@@ -112,7 +111,7 @@ BarWidget {
       root.batteryPct = -1
       root.charging = false
     }
-    if (nowGranted && !wasGranted && !root.helperOutdated) Qt.callLater(root.applyBootPref)
+    if (nowGranted && !wasGranted && !root.helperOutdated) Qt.callLater(root.syncBootPref)
     Qt.callLater(root.flushPending)
   }
 
@@ -195,41 +194,25 @@ BarWidget {
     root.refresh()
   }
 
-  // ---- Persistence (state file + post-boot hook) ----
+  // ---- Persistence (state file + boot hook) ----
   function persistState() {
     if (!root.supported || root.limit < 0) return
     var start = root.startThreshold >= 0 ? root.startThreshold : 0
     if (start >= root.limit) start = Math.max(0, root.limit - 5)
-    var sd = root.stateDir
-    var pd = root.pluginDir
-    var lines = ["mkdir -p '" + sd + "'"]
-    lines.push("printf '%s %s\\n' '" + root.limit + "' '" + start + "' > '" + sd + "/limit'")
-    if (root.applyAtBootPref) {
-      lines.push("touch '" + sd + "/apply-at-boot'")
-      lines.push("omarchy hook install post-boot '" + pd + "/post-boot.sh' >/dev/null 2>&1 || true")
-    } else {
-      lines.push("rm -f '" + sd + "/apply-at-boot'")
-    }
-    houseProc.command = ["/bin/bash", "-c", lines.join(" && ")]
-    if (!houseProc.running) houseProc.running = true
+    stateProc.command = ["bash", root.scriptPath(), "save-state", String(root.limit), String(start)]
+    if (!stateProc.running) stateProc.running = true
+    syncBootPref()
   }
 
-  function applyBootPref() {
+  function syncBootPref() {
     if (!root.granted) return
-    var sd = root.stateDir
-    var pd = root.pluginDir
-    var lines
-    if (root.applyAtBootPref) {
-      lines = [
-        "mkdir -p '" + sd + "'",
-        "touch '" + sd + "/apply-at-boot'",
-        "omarchy hook install post-boot '" + pd + "/post-boot.sh' >/dev/null 2>&1 || true"
-      ]
-    } else {
-      lines = ["rm -f '" + sd + "/apply-at-boot'"]
-    }
-    bootPrefProc.command = ["/bin/bash", "-c", lines.join(" && ")]
+    bootPrefProc.command = ["bash", root.scriptPath(), "boot-pref", root.applyAtBootPref ? "on" : "off"]
     if (!bootPrefProc.running) bootPrefProc.running = true
+  }
+
+  function installHook() {
+    hookProc.command = ["omarchy", "hook", "install", "post-boot", root.pluginDir + "/" + root.hookName]
+    if (!hookProc.running) hookProc.running = true
   }
 
   // ---- Grant / redeploy flow (one-time pkexec setup) ----
@@ -256,7 +239,7 @@ BarWidget {
       data = null
     }
     if (data && data.ok === true) root.refresh()
-    else root.lastError = "Setup failed"
+    else root.lastError = data && data.error ? String(data.error) : "Setup failed"
   }
 
   // ---- Processes ----
@@ -285,12 +268,23 @@ BarWidget {
   }
 
   Process {
-    id: houseProc
+    id: stateProc
     stdout: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0 && root.applyAtBootPref) root.installHook()
+    }
   }
 
   Process {
     id: bootPrefProc
+    stdout: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0 && root.applyAtBootPref) root.installHook()
+    }
+  }
+
+  Process {
+    id: hookProc
     stdout: StdioCollector { waitForEnd: true }
   }
 
@@ -305,7 +299,7 @@ BarWidget {
 
   onPollIntervalSecChanged: pollTimer.restart()
 
-  onApplyAtBootPrefChanged: root.applyBootPref()
+  onApplyAtBootPrefChanged: root.syncBootPref()
 
   Component.onCompleted: root.refresh()
 

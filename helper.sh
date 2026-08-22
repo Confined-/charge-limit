@@ -1,10 +1,10 @@
 #!/bin/bash
 set -u
 
-SYSFS="/sys/class/power_supply"
+SYSFS="${BATTERY_SYSFS:-/sys/class/power_supply}"
 HELPER_BIN="/usr/local/bin/battery-charge-limit"
 DRY_RUN="${CHARGE_LIMIT_DRY_RUN:-}"
-VERSION="2"
+VERSION="3"
 
 cmd_version() {
   printf '{"ok":true,"version":"%s"}\n' "$VERSION"
@@ -12,7 +12,7 @@ cmd_version() {
 
 granted_probe() {
   [ -x "$HELPER_BIN" ] || return 1
-  if sudo -n -l -- "$HELPER_BIN" >/dev/null 2>&1; then
+  if sudo -n -l -- "$HELPER_BIN" set 80 70 >/dev/null 2>&1; then
     return 0
   fi
   return 1
@@ -25,6 +25,7 @@ usage() {
 
 json_escape() {
   local s=$1
+  s=$(printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037')
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
   printf '"%s"' "$s"
