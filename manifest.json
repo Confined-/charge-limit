@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "confined.charge-limit",
+  "name": "Charge Limit",
+  "version": "1.0.0",
+  "author": "Confined",
+  "license": "MIT",
+  "description": "Toggle an 80/70 battery charge limit from the Omarchy bar — extend battery lifespan with one click.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Charge Limit",
+    "description": "One-click 80/70% battery charge limit: click the bar item to toggle it on or off.",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "pollIntervalSec": 30,
+      "applyAtBoot": true
+    },
+    "schema": [
+      {
+        "key": "pollIntervalSec",
+        "type": "integer",
+        "label": "Poll interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "applyAtBoot",
+        "type": "boolean",
+        "label": "Re-apply the limit after reboot",
+        "defaultValue": true
+      }
+    ]
+  }
+}
