@@ -12,7 +12,7 @@ BarWidget {
   readonly property bool applyAtBootPref: setting("applyAtBoot", true) === true
 
   readonly property string helperBin: "/usr/local/bin/battery-charge-limit"
-  readonly property string helperVersion: "3"
+  readonly property string helperVersion: "5"
   readonly property string hookName: "confined.charge-limit.sh"
   readonly property string pluginDir: {
     var p = root.scriptPath()
@@ -51,9 +51,20 @@ BarWidget {
 
   readonly property int activeBatteries: root.activeBatteryCount(root.batteries)
   readonly property bool limitActive: root.activeBatteries > 0
-  readonly property bool mixedLimits: root.batteries.length > 1
-    && root.activeBatteries > 0
-    && root.activeBatteries < root.batteries.length
+
+  function pairsDiffer(list) {
+    if (!list || list.length < 2) return false
+    var ref = list[0]
+    for (var i = 1; i < list.length; i++) {
+      if (root.num(ref.end, -1) !== root.num(list[i].end, -1)) return true
+      var refStart = (ref.start === undefined || ref.start === null) ? -1 : Number(ref.start)
+      var cmpStart = (list[i].start === undefined || list[i].start === null) ? -1 : Number(list[i].start)
+      if (refStart !== cmpStart) return true
+    }
+    return false
+  }
+
+  readonly property bool mixedLimits: root.batteries.length > 1 && root.pairsDiffer(root.batteries)
 
   function num(value, fallback) {
     var n = Number(value)

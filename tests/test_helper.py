@@ -48,6 +48,21 @@ def run(*args, dry=True, extra_env=None):
 
 
 def main():
+    helper_src = open(HELPER).read()
+    qml_path = os.path.join(HERE, "..", "BarWidget.qml")
+    qml_src = open(qml_path).read()
+    import re
+    m_ver = re.search(r'^VERSION="([^"]+)"', helper_src, re.M)
+    m_qml = re.search(r'helperVersion:\s*"([^"]+)"', qml_src)
+    check("version contract: helper has VERSION", m_ver is not None)
+    check("version contract: QML has helperVersion", m_qml is not None)
+    if m_ver and m_qml:
+        check(
+            "version contract: QML expectation matches helper",
+            m_ver.group(1) == m_qml.group(1),
+            f"helper={m_ver.group(1)} qml={m_qml.group(1)}",
+        )
+
     with tempfile.TemporaryDirectory() as tmp:
         fake_sys = os.path.join(tmp, "sys")
         make_sysfs(fake_sys)
@@ -137,6 +152,28 @@ def main():
         check("BAT0 start rolled back", bat0_start_after == "75", f"start={bat0_start_after}")
         os.chmod(os.path.join(rollback_tree, "BAT1", "charge_control_end_threshold"), 0o644)
 
+        order_tree = os.path.join(tmp, "order")
+        for name, (end_v, start_v) in {"BAT0": ("70", "60"), "BAT1": ("80", "75")}.items():
+            d = os.path.join(order_tree, name)
+            os.makedirs(d)
+            with open(os.path.join(d, "charge_control_end_threshold"), "w") as fh:
+                fh.write(end_v + "\n")
+            with open(os.path.join(d, "charge_control_start_threshold"), "w") as fh:
+                fh.write(start_v + "\n")
+        os.chmod(os.path.join(order_tree, "BAT1", "charge_control_end_threshold"), 0o444)
+        r = subprocess.run(
+            ["bash", HELPER, "set", "80", "75"],
+            capture_output=True, text=True,
+            env={**os.environ, "BATTERY_SYSFS": order_tree},
+        )
+        data = json.loads(r.stdout)
+        check("higher-start failure reported", r.returncode == 3 and data["ok"] is False, r.stdout)
+        bat0_end_after = open(os.path.join(order_tree, "BAT0", "charge_control_end_threshold")).read().strip()
+        bat0_start_after = open(os.path.join(order_tree, "BAT0", "charge_control_start_threshold")).read().strip()
+        check("60/70 end restored across raising transition", bat0_end_after == "70", f"end={bat0_end_after}")
+        check("60/70 start restored across raising transition", bat0_start_after == "60", f"start={bat0_start_after}")
+        os.chmod(os.path.join(order_tree, "BAT1", "charge_control_end_threshold"), 0o644)
+
         root_env_test = subprocess.run(
             ["bash", HELPER, "get"],
             capture_output=True, text=True,
@@ -146,7 +183,7 @@ def main():
 
         r = run("version", dry=False)
         vdata = json.loads(r.stdout)
-        check("version ok", vdata["ok"] is True and vdata["version"] == "4", r.stdout)
+        check("version ok", vdata["ok"] is True and vdata["version"] == "5", r.stdout)
 
         state = os.path.join(tmp, "state")
         senv = {"BATTERY_SYSFS": fake_sys, "XDG_STATE_HOME": state}

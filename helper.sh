@@ -4,7 +4,7 @@ set -u
 SYSFS="/sys/class/power_supply"
 HELPER_BIN="/usr/local/bin/battery-charge-limit"
 DRY_RUN="${CHARGE_LIMIT_DRY_RUN:-}"
-VERSION="4"
+VERSION="5"
 
 if [ "$(id -u)" -eq 0 ]; then
   SYSFS="/sys/class/power_supply"
@@ -138,6 +138,41 @@ restore_attr() {
   echo "$value" > "$file" 2>/dev/null
 }
 
+restore_pair() {
+  local dir=$1 old_start=$2 old_end=$3
+  local start_file="$dir/charge_control_start_threshold"
+  local end_file="$dir/charge_control_end_threshold"
+  [ -n "$old_end" ] || return 0
+
+  local cur_end cur_start=""
+  cur_end=$(read_int "$end_file")
+  [ -e "$start_file" ] && cur_start=$(read_int "$start_file")
+
+  if [ -z "$cur_start" ] || [ "$old_end" -ge "$cur_start" ]; then
+    write_attr "$end_file" "$old_end" || return 1
+    if [ -n "$old_start" ] && ! write_attr "$start_file" "$old_start"; then
+      return 1
+    fi
+    return 0
+  fi
+
+  if [ -n "$old_start" ] && [ "$old_start" -le "$cur_end" ]; then
+    write_attr "$start_file" "$old_start" || return 1
+    if write_attr "$end_file" "$old_end"; then
+      return 0
+    fi
+    return 1
+  fi
+
+  restore_attr "$end_file" "$old_end"
+  restore_attr "$start_file" "$old_start"
+  local now_end now_start
+  now_end=$(read_int "$end_file")
+  [ -e "$start_file" ] && now_start=$(read_int "$start_file")
+  [ "$now_end" = "$old_end" ] || return 1
+  [ -z "$old_start" ] || [ "$now_start" = "$old_start" ] || return 1
+}
+
 write_pair() {
   local dir=$1 new_end=$2 new_start=$3
   local start_file="$dir/charge_control_start_threshold"
@@ -246,12 +281,18 @@ cmd_set() {
   done
 
   if [ "$errors" -gt 0 ]; then
+    local restore_failures=0
     for i in "${!undo_dirs[@]}"; do
-      restore_attr "${undo_dirs[$i]}/charge_control_end_threshold" "${undo_old_ends[$i]}"
-      restore_attr "${undo_dirs[$i]}/charge_control_start_threshold" "${undo_old_starts[$i]}"
+      if ! restore_pair "${undo_dirs[$i]}" "${undo_old_starts[$i]}" "${undo_old_ends[$i]}"; then
+        restore_failures=$((restore_failures + 1))
+      fi
     done
     details=${details%,}
-    printf '{"ok":false,"error":"one or more batteries rejected the value; applied changes were rolled back","batteries":[%s]}\n' "$details"
+    if [ "$restore_failures" -gt 0 ]; then
+      printf '{"ok":false,"error":"one or more batteries rejected the value; rollback was incomplete","batteries":[%s]}\n' "$details"
+    else
+      printf '{"ok":false,"error":"one or more batteries rejected the value; applied changes were rolled back","batteries":[%s]}\n' "$details"
+    fi
     exit 3
   fi
 
