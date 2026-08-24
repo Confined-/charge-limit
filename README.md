@@ -1,7 +1,7 @@
 # Charge Limit
 
-One-click **80/70% battery charge limit** toggle for Omarchy. Keeping a lithium
-battery between 70–80% dramatically slows its aging when the machine spends
+One-click **80% battery charge limit** toggle for Omarchy. Keeping a lithium
+battery at 80% dramatically slows its aging when the machine spends
 most of its time plugged in.
 
 Click the lightning bolt in the bar: charging stops at **80%** and resumes
@@ -53,7 +53,7 @@ Entry settings in `~/.config/omarchy/shell.json` (`bar.layout.*` →
 | `pollIntervalSec` | integer | 30      | How often the bar state refreshes  |
 | `applyAtBoot`     | boolean | true    | Save state + install the boot hook |
 
-The limits themselves are fixed at 80/70 in v1 by design.
+The limits themselves are fixed at 80/70 in v1.
 
 ## Uninstall
 
