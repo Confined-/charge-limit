@@ -52,14 +52,20 @@ BarWidget {
   readonly property int activeBatteries: root.activeBatteryCount(root.batteries)
   readonly property bool limitActive: root.activeBatteries > 0
 
+  function normalizeStart(value) {
+    if (value === undefined || value === null) return -1
+    return Number(value)
+  }
+
+  function sameBatteryPair(a, b) {
+    if (root.num(a.end, -1) !== root.num(b.end, -1)) return false
+    return root.normalizeStart(a.start) === root.normalizeStart(b.start)
+  }
+
   function pairsDiffer(list) {
     if (!list || list.length < 2) return false
-    var ref = list[0]
     for (var i = 1; i < list.length; i++) {
-      if (root.num(ref.end, -1) !== root.num(list[i].end, -1)) return true
-      var refStart = (ref.start === undefined || ref.start === null) ? -1 : Number(ref.start)
-      var cmpStart = (list[i].start === undefined || list[i].start === null) ? -1 : Number(list[i].start)
-      if (refStart !== cmpStart) return true
+      if (!root.sameBatteryPair(list[0], list[i])) return true
     }
     return false
   }
@@ -115,23 +121,23 @@ BarWidget {
     if (!getStatus.running) getStatus.running = true
   }
 
-  function onGetFinished(text) {
-    var raw = String(text || "").trim()
-    if (!raw) {
-      if (root.probed && root.lastError === "") root.lastError = "status unavailable"
-      return
+  function parseGetPayload(raw) {
+    var text = String(raw || "").trim()
+    if (!text) {
+      if (root.probed) root.lastError = "status unavailable"
+      return null
     }
-    var data
     try {
-      data = JSON.parse(raw)
+      var data = JSON.parse(text)
+      if (!data || data.ok !== true) throw new Error("bad ok")
+      return data
     } catch (e) {
       if (root.probed) root.lastError = "bad status response"
-      return
+      return null
     }
-    if (!data || data.ok !== true) {
-      if (root.probed) root.lastError = String(data && data.error ? data.error : "status failed")
-      return
-    }
+  }
+
+  function updateGrantState(data) {
     var wasGranted = root.granted
     root.probed = true
     root.supported = data.supported === true
@@ -139,27 +145,37 @@ BarWidget {
     root.helperOutdated = nowGranted && String(data.version || "") !== root.helperVersion
     root.granted = nowGranted
     root.lastError = ""
-    if (Array.isArray(data.batteries) && data.batteries.length > 0) {
-      root.batteries = data.batteries
-      var pctSum = 0
-      var pctCount = 0
-      var anyCharging = false
-      for (var i = 0; i < data.batteries.length; i++) {
-        var b = data.batteries[i]
-        if (root.num(b.capacity, -1) >= 0) {
-          pctSum += root.num(b.capacity, 0)
-          pctCount++
-        }
-        if (b.charging === true) anyCharging = true
-      }
-      root.batteryPct = pctCount > 0 ? Math.round(pctSum / pctCount) : -1
-      root.charging = anyCharging
-    } else {
+    if (nowGranted && !wasGranted && !root.helperOutdated) Qt.callLater(root.syncBootPref)
+  }
+
+  function updateBatteryState(data) {
+    if (!Array.isArray(data.batteries) || data.batteries.length === 0) {
       root.batteries = []
       root.batteryPct = -1
       root.charging = false
+      return
     }
-    if (nowGranted && !wasGranted && !root.helperOutdated) Qt.callLater(root.syncBootPref)
+    root.batteries = data.batteries
+    var pctSum = 0
+    var pctCount = 0
+    var anyCharging = false
+    for (var i = 0; i < data.batteries.length; i++) {
+      var b = data.batteries[i]
+      if (root.num(b.capacity, -1) >= 0) {
+        pctSum += root.num(b.capacity, 0)
+        pctCount++
+      }
+      if (b.charging === true) anyCharging = true
+    }
+    root.batteryPct = pctCount > 0 ? Math.round(pctSum / pctCount) : -1
+    root.charging = anyCharging
+  }
+
+  function onGetFinished(text) {
+    var data = root.parseGetPayload(text)
+    if (!data) return
+    root.updateGrantState(data)
+    root.updateBatteryState(data)
     Qt.callLater(root.flushPending)
   }
 
