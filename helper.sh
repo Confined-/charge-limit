@@ -4,12 +4,12 @@ set -u
 SYSFS="/sys/class/power_supply"
 HELPER_BIN="/usr/local/bin/battery-charge-limit"
 DRY_RUN="${CHARGE_LIMIT_DRY_RUN:-}"
-VERSION="6"
+VERSION="7"
 
 if [ "$(id -u)" -eq 0 ]; then
   SYSFS="/sys/class/power_supply"
   DRY_RUN=""
-elif [ -n "${BATTERY_SYSFS:-}" ]; then
+elif [ -n "${CHARGE_LIMIT_TEST_MODE:-}" ] && [ -n "${BATTERY_SYSFS:-}" ]; then
   SYSFS="$BATTERY_SYSFS"
 fi
 
@@ -238,6 +238,13 @@ cmd_set() {
     exit 1
   fi
 
+  if [ "$(id -u)" -eq 0 ]; then
+    if ! { [ "$end" = "80" ] && [ "$start" = "70" ]; } && ! { [ "$end" = "100" ] && [ "$start" = "0" ]; }; then
+      printf '{"ok":false,"error":"only the pairs 80 70 and 100 0 are permitted"}\n'
+      exit 2
+    fi
+  fi
+
   local dirs=()
   local dir
   while IFS= read -r dir; do
@@ -298,29 +305,20 @@ state_dir() {
 }
 
 cmd_save_state() {
-  local end=${1:-}
-  local start=${2:-}
+  local state=${1:-}
   if [ "$(id -u)" -eq 0 ]; then
     printf '{"ok":false,"error":"refusing to write user state as root"}\n'
     exit 1
   fi
-  if ! validate_value "$end"; then
-    printf '{"ok":false,"error":"invalid state value"}\n'
-    exit 2
-  fi
-  case $start in
-    '') start=0 ;;
-    *[!0-9]*)
-      printf '{"ok":false,"error":"lower limit must be an integer"}\n'
+  case $state in
+    on|off) ;;
+    *)
+      printf '{"ok":false,"error":"state must be on or off"}\n'
       exit 2
       ;;
   esac
-  if [ "$start" -gt 100 ] || [ "$start" -ge "$end" ]; then
-    printf '{"ok":false,"error":"lower limit must be below the upper limit"}\n'
-    exit 2
-  fi
   mkdir -p "$(state_dir)"
-  printf '%s %s\n' "$end" "$start" > "$(state_dir)/limit"
+  printf '%s\n' "$state" > "$(state_dir)/limit"
   printf '{"ok":true}\n'
 }
 

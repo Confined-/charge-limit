@@ -42,6 +42,8 @@ def run(*args, dry=True, extra_env=None):
         env["CHARGE_LIMIT_DRY_RUN"] = "1"
     if extra_env:
         env.update(extra_env)
+        if "BATTERY_SYSFS" in extra_env:
+            env["CHARGE_LIMIT_TEST_MODE"] = "1"
     return subprocess.run(
         ["bash", HELPER, *args], capture_output=True, text=True, env=env
     )
@@ -137,7 +139,7 @@ def main():
             with open(os.path.join(d, "charge_control_start_threshold"), "w") as fh:
                 fh.write("75\n")
         os.chmod(os.path.join(rollback_tree, "BAT1", "charge_control_end_threshold"), 0o444)
-        renv_nb = {"BATTERY_SYSFS": rollback_tree}
+        renv_nb = {"BATTERY_SYSFS": rollback_tree, "CHARGE_LIMIT_TEST_MODE": "1"}
         r = subprocess.run(
             ["bash", HELPER, "set", "70", "60"],
             capture_output=True, text=True,
@@ -164,7 +166,7 @@ def main():
         r = subprocess.run(
             ["bash", HELPER, "set", "80", "75"],
             capture_output=True, text=True,
-            env={**os.environ, "BATTERY_SYSFS": order_tree},
+            env={**os.environ, "BATTERY_SYSFS": order_tree, "CHARGE_LIMIT_TEST_MODE": "1"},
         )
         data = json.loads(r.stdout)
         check("higher-start failure reported", r.returncode == 3 and data["ok"] is False, r.stdout)
@@ -224,7 +226,7 @@ def main():
         src = subprocess.run(
             [
                 "bash", "-c",
-                f'export BATTERY_SYSFS={trace_tmp} CHARGE_LIMIT_DRY_RUN=1; '
+                f'export BATTERY_SYSFS={trace_tmp} CHARGE_LIMIT_TEST_MODE=1 CHARGE_LIMIT_DRY_RUN=1; '
                 f'set -- __lib__; source {HELPER}; '
                 'restore_pair "$BATTERY_SYSFS/BAT0" 60 70',
             ],
@@ -234,11 +236,11 @@ def main():
 
         r = run("version", dry=False)
         vdata = json.loads(r.stdout)
-        check("version ok", vdata["ok"] is True and vdata["version"] == "6", r.stdout)
+        check("version ok", vdata["ok"] is True and vdata["version"] == "7", r.stdout)
         src2 = subprocess.run(
             [
                 "bash", "-c",
-                f'export BATTERY_SYSFS={trace_tmp} CHARGE_LIMIT_DRY_RUN=1; '
+                f'export BATTERY_SYSFS={trace_tmp} CHARGE_LIMIT_TEST_MODE=1 CHARGE_LIMIT_DRY_RUN=1; '
                 f'set -- __lib__; source {HELPER}; '
                 'APPLIED_START=""; write_pair "$BATTERY_SYSFS/BAT0" 70 60 && restore_pair "$BATTERY_SYSFS/BAT0" 75 80',
             ],
@@ -255,26 +257,20 @@ def main():
 
         r = run("version", dry=False)
         vdata = json.loads(r.stdout)
-        check("version ok", vdata["ok"] is True and vdata["version"] == "6", r.stdout)
+        check("version ok", vdata["ok"] is True and vdata["version"] == "7", r.stdout)
 
         state = os.path.join(tmp, "state")
-        senv = {"BATTERY_SYSFS": fake_sys, "XDG_STATE_HOME": state}
-        r = run("save-state", "75", extra_env=senv)
-        check("save-state ok", json.loads(r.stdout)["ok"] is True, r.stderr)
+        senv = {"XDG_STATE_HOME": state}
+        r = run("save-state", "on", extra_env=senv)
+        check("save-state on ok", json.loads(r.stdout)["ok"] is True, r.stderr)
         limit_file = os.path.join(state, "battery-charge-limit", "limit")
-        check("save-state default start", open(limit_file).read().split() == ["75", "0"])
-
-        r = run("save-state", "75", "65", extra_env=senv)
-        check("save-state wrote pair", open(limit_file).read().split() == ["75", "65"])
-
+        check("save-state on writes on", open(limit_file).read().strip() == "on")
+        r = run("save-state", "off", extra_env=senv)
+        check("save-state off writes off", open(limit_file).read().strip() == "off")
         r = run("save-state", "999", extra_env=senv)
         check("save-state rejects bad value", r.returncode == 2)
-
-        r = run("save-state", "75", "999", extra_env=senv)
-        check("save-state rejects out-of-range lower", r.returncode == 2, r.stdout)
-
-        r = run("save-state", "70", "80", extra_env=senv)
-        check("save-state rejects lower above upper", r.returncode == 2, r.stdout)
+        r = run("save-state", "maybe", extra_env=senv)
+        check("save-state rejects invalid", r.returncode == 2, r.stdout)
 
         marker = os.path.join(state, "battery-charge-limit", "apply-at-boot")
         r = run("boot-pref", "on", extra_env=senv)

@@ -12,7 +12,7 @@ BarWidget {
   readonly property bool applyAtBootPref: setting("applyAtBoot", true) === true
 
   readonly property string helperBin: "/usr/local/bin/battery-charge-limit"
-  readonly property string helperVersion: "6"
+  readonly property string helperVersion: "7"
   readonly property string hookName: "confined.charge-limit.sh"
   readonly property string pluginDir: {
     var p = root.scriptPath()
@@ -236,18 +236,18 @@ BarWidget {
       return
     }
     root.lastError = ""
-    root.persistState(root.requestedEnd, root.requestedStart)
+    root.persistState(root.requestedEnd < 100)
     root.refresh()
   }
 
   // ---- Persistence (state file + boot hook) ----
-  function persistState(endValue, startValue) {
+  function persistState(enabled) {
     if (!root.supported) return
     if (stateProc.running) {
       root.stateDirty = true
       return
     }
-    stateProc.command = ["bash", root.scriptPath(), "save-state", String(clampLimit(endValue)), String(Math.max(0, Math.round(Number(startValue) || 0)))]
+    stateProc.command = ["bash", root.scriptPath(), "save-state", enabled ? "on" : "off"]
     stateProc.running = true
   }
 
@@ -275,9 +275,7 @@ BarWidget {
   function requestGrant() {
     if (root.granting) return
     root.granting = true
-    var user = String(Quickshell.env("USER") || "")
-    if (user === "") user = String(Quickshell.env("HOME") || "").replace(/^.*\//, "")
-    grantProc.command = ["pkexec", root.scriptPath("setup-root.sh"), user]
+    grantProc.command = ["pkexec", root.scriptPath("setup-root.sh")]
     if (!grantProc.running) grantProc.running = true
   }
 
